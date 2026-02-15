@@ -1,3 +1,29 @@
+//! Telegram bot implementation.
+//!
+//! This module implements a Telegram bot for monitoring NEAR account balances.
+//! The bot supports multiple users simultaneously, each with their own watchlist
+//! of accounts. A background task polls accounts every 60 seconds and sends alerts
+//! when balances change.
+//!
+//! # Architecture
+//!
+//! - **Shared State**: `Arc<Mutex<Vec<MonitoredAccount>>>` holds all monitored accounts
+//! - **Background Task**: Runs in a separate tokio task, polling every 60 seconds
+//! - **Multi-User**: Each user (chat ID) has their own list of monitored accounts
+//!
+//! # Bot Commands
+//!
+//! - `/start` - Welcome message
+//! - `/help` - Show available commands
+//! - `/balance <account>` - Query current balance
+//! - `/add <account>` - Add account to watchlist
+//! - `/remove <account>` - Remove account from watchlist
+//! - `/list` - List monitored accounts
+//! - `/trxs <account>` - Show recent transactions
+
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::utils::command::BotCommands;
@@ -8,6 +34,10 @@ use std::time::Duration;
 use crate::near::NearClient;
 use crate::utils;
 
+/// Telegram bot commands.
+///
+/// These commands are automatically parsed by teloxide's `BotCommands` derive macro.
+/// Command descriptions appear in the bot's help menu.
 #[derive(BotCommands, Clone)]
 #[command(rename_rule = "lowercase", description = "These commands are supported:")]
 enum Command {
@@ -29,29 +59,107 @@ enum Command {
     List,
     #[command(description = "list last 10 transactions. Usage: /trxs <account_id>")]
     Trxs(String),
+    #[command(description = "broadcast a message to all users.")]
+    Broadcast(String),
+}
+
+/// Manages the persistence of user IDs.
+struct UserManager {
+    users: HashSet<i64>,
+    file_path: String,
+}
+
+impl UserManager {
+    fn load(file_path: &str) -> Self {
+        let users = if Path::new(file_path).exists() {
+            let data = fs::read_to_string(file_path).unwrap_or_default();
+            serde_json::from_str(&data).unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
+        Self {
+            users,
+            file_path: file_path.to_string(),
+        }
+    }
+
+    fn add_user(&mut self, chat_id: i64) -> bool {
+        if self.users.insert(chat_id) {
+            self.save();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn save(&self) {
+        if let Ok(data) = serde_json::to_string(&self.users) {
+            let _ = fs::write(&self.file_path, data);
+        }
+    }
+
+    fn get_all_users(&self) -> Vec<i64> {
+        self.users.iter().cloned().collect()
+    }
 }
 
 /// Internal state for an account being monitored by a specific user/chat.
+///
+/// Each instance represents one account being watched by one user.
+/// The same account can be monitored by multiple users (multiple instances with different chat IDs).
 #[derive(Clone)]
 struct MonitoredAccount {
+    /// NEAR account ID being monitored (e.g., "example.near")
     account_id: String,
     /// Last known balance in yoctoNEAR. Used to detect changes.
+    /// `None` means the initial balance hasn't been fetched yet.
     last_balance: Option<u128>,
-    /// The Telegram chat ID to send notifications to.
+    /// The Telegram chat ID to send notifications to when balance changes.
     chat_id: ChatId,
 }
 
 /// Starts the Telegram bot and the background monitoring loop.
-/// 
-/// This function blocks until the bot is stopped.
+///
+/// This function initializes the bot, spawns a background task for monitoring
+/// account balances, and starts the command handler loop.
+///
+/// # Environment Variables
+///
+/// Requires `TELOXIDE_TOKEN` to be set with a valid Telegram bot token.
+///
+/// # Returns
+///
+/// Returns `Ok(())` when the bot stops gracefully, or an error message.
+///
+/// # Errors
+///
+/// Returns `Err(String)` if the bot token is invalid or missing.
+///
+/// # Architecture
+///
+/// The function spawns two concurrent tasks:
+/// 1. **Command Handler**: Processes user commands via `Command::repl`
+/// 2. **Background Monitor**: Polls accounts every 60 seconds and sends alerts
+///
+/// # Examples
+///
+/// ```no_run
+/// # use near_balance_monitor::bot;
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), String> {
+/// // Set TELOXIDE_TOKEN environment variable first
+/// bot::run().await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn run() -> Result<(), String> {
     log::info!("Starting bot...");
 
     let bot = Bot::from_env();
 
-    // Shared state: List of monitored accounts
-    // Using simple Arc<Mutex<Vec<...>>> for MVP.
+    // Shared state: List of monitored accounts and known users
     let monitored_accounts: Arc<Mutex<Vec<MonitoredAccount>>> = Arc::new(Mutex::new(Vec::new()));
+    let user_manager: Arc<Mutex<UserManager>> = Arc::new(Mutex::new(UserManager::load("users.json")));
 
     let monitored_accounts_for_loop = monitored_accounts.clone();
     let bot_for_loop = bot.clone();
@@ -64,11 +172,6 @@ pub async fn run() -> Result<(), String> {
         loop {
             interval.tick().await;
 
-            // We iterate and update in place. Since we hold the lock for the duration of the check
-            // (or we could clone, check, then re-lock to update), holding the lock might be simpler for MVP
-            // but blocking the bot from adding new accounts is bad.
-            // Better: Clone the list, check balances, then re-lock to update if changed.
-            
             let accounts_to_check: Vec<MonitoredAccount> = {
                 let guard = monitored_accounts_for_loop.lock().await;
                 guard.clone()
@@ -107,8 +210,9 @@ pub async fn run() -> Result<(), String> {
 
     Command::repl(bot, move |bot, msg, cmd| {
         let monitored_accounts = monitored_accounts.clone();
+        let user_manager = user_manager.clone();
         async move {
-            answer(bot, msg, cmd, monitored_accounts).await
+            answer(bot, msg, cmd, monitored_accounts, user_manager).await
         }
     })
     .await;
@@ -116,12 +220,40 @@ pub async fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// Handles incoming bot commands and executes the appropriate action.
+///
+/// This function is called by the teloxide framework for each user command.
+/// It processes the command, interacts with NEAR RPC, and sends responses.
+///
+/// # Arguments
+///
+/// * `bot` - The Telegram bot instance
+/// * `msg` - The incoming message containing the command
+/// * `cmd` - The parsed command enum
+/// * `monitored_accounts` - Shared state of monitored accounts
+/// * `user_manager` - Shared state of known users
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the command was handled successfully, or a teloxide error.
+///
+/// # Error Handling
+///
+/// Errors are caught and sent back to the user as error messages rather than
+/// propagated up, so the bot continues running even if individual commands fail.
 async fn answer(
     bot: Bot,
     msg: Message,
     cmd: Command,
     monitored_accounts: Arc<Mutex<Vec<MonitoredAccount>>>,
+    user_manager: Arc<Mutex<UserManager>>,
 ) -> ResponseResult<()> {
+    // Record user
+    {
+        let mut guard = user_manager.lock().await;
+        guard.add_user(msg.chat.id.0);
+    }
+
     match cmd {
         Command::Help => {
             bot.send_message(msg.chat.id, Command::descriptions().to_string()).await?;
@@ -237,6 +369,25 @@ async fn answer(
                     bot.send_message(msg.chat.id, format!("Error fetching transactions: {}", e)).await?;
                 }
             }
+        }
+        Command::Broadcast(text) => {
+            if text.is_empty() {
+                bot.send_message(msg.chat.id, "Usage: /broadcast <message>").await?;
+                return Ok(());
+            }
+
+            let users = {
+                let guard = user_manager.lock().await;
+                guard.get_all_users()
+            };
+
+            bot.send_message(msg.chat.id, format!("Broadcasting to {} users...", users.len())).await?;
+
+            for user_id in users {
+                let _ = bot.send_message(ChatId(user_id), &text).await;
+            }
+
+            bot.send_message(msg.chat.id, "Broadcast complete.").await?;
         }
     };
     Ok(())
