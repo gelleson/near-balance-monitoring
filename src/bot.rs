@@ -61,13 +61,21 @@ enum Command {
     Trxs(String),
 }
 
-/// Manages the persistence of user IDs.
+/// Manages the persistence of user IDs to enable broadcasting and startup notifications.
+///
+/// This manager maintains a set of unique Telegram chat IDs and ensures they are
+/// saved to a JSON file for persistence across bot restarts.
 struct UserManager {
+    /// Set of unique Telegram chat IDs.
     users: HashSet<i64>,
+    /// Path to the JSON file where user IDs are stored.
     file_path: String,
 }
 
 impl UserManager {
+    /// Loads known users from the specified file path.
+    ///
+    /// If the file does not exist, an empty `UserManager` is returned.
     fn load(file_path: &str) -> Self {
         let users = if Path::new(file_path).exists() {
             let data = fs::read_to_string(file_path).unwrap_or_default();
@@ -81,6 +89,10 @@ impl UserManager {
         }
     }
 
+    /// Adds a new user to the system.
+    ///
+    /// Returns `true` if the user was newly added, `false` if they were already known.
+    /// Automatically saves the updated user list to disk.
     fn add_user(&mut self, chat_id: i64) -> bool {
         if self.users.insert(chat_id) {
             self.save();
@@ -90,12 +102,14 @@ impl UserManager {
         }
     }
 
+    /// Saves the current list of users to the configured file path.
     fn save(&self) {
         if let Ok(data) = serde_json::to_string(&self.users) {
             let _ = fs::write(&self.file_path, data);
         }
     }
 
+    /// Returns a list of all unique user IDs currently tracked by the bot.
     fn get_all_users(&self) -> Vec<i64> {
         self.users.iter().cloned().collect()
     }
