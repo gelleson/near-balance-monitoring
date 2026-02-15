@@ -23,15 +23,24 @@ struct AccountView {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+pub struct ActionsAgg {
+    pub deposit: f64,
+}
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct Transaction {
+    #[serde(rename = "transaction_hash")]
     pub hash: String,
+    #[serde(rename = "predecessor_account_id")]
     pub signer_id: String,
+    #[serde(rename = "receiver_account_id")]
     pub receiver_id: String,
+    pub actions_agg: ActionsAgg,
 }
 
 #[derive(Deserialize)]
-struct FastNearResponse {
-    transactions: Vec<Transaction>,
+struct NearBlocksResponse {
+    txns: Vec<Transaction>,
 }
 
 /// Client for interacting with the NEAR Protocol RPC.
@@ -49,7 +58,7 @@ impl NearClient {
 
     /// Fetches the last 10 transactions for a NEAR account.
     pub async fn fetch_transactions(&self, account_id: &str) -> Result<Vec<Transaction>, String> {
-        let url = format!("https://api.fastnear.com/v1/account/{}/txns?limit=10", account_id);
+        let url = format!("https://api.nearblocks.io/v1/account/{}/txns?limit=25", account_id);
         
         let response = self.client
             .get(&url)
@@ -57,12 +66,24 @@ impl NearClient {
             .await
             .map_err(|e| format!("HTTP request failed: {e}"))?;
 
-        let fast_near_response: FastNearResponse = response
+        let near_blocks_response: NearBlocksResponse = response
             .json()
             .await
             .map_err(|e| format!("Failed to parse response: {e}"))?;
 
-        Ok(fast_near_response.transactions)
+        let mut txs = Vec::new();
+        let mut seen_hashes = std::collections::HashSet::new();
+
+        for tx in near_blocks_response.txns {
+            if seen_hashes.insert(tx.hash.clone()) {
+                txs.push(tx);
+                if txs.len() >= 10 {
+                    break;
+                }
+            }
+        }
+
+        Ok(txs)
     }
 
     /// Fetches the current balance of a NEAR account in yoctoNEAR.

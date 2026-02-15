@@ -40,6 +40,22 @@ pub async fn run(cli: Cli) -> Result<(), String> {
         Commands::Bot => {
             bot::run().await?;
         }
+        Commands::Txs { account_id } => {
+            let txs = near_client.fetch_transactions(&account_id).await?;
+            if txs.is_empty() {
+                println!("No transactions found for {account_id}");
+            } else {
+                println!("Last transactions for {account_id}:");
+                for tx in txs {
+                    println!("- Hash:   {}\n  From:   {}\n  To:     {}\n  Amount: {}\n", 
+                        tx.hash, 
+                        tx.signer_id, 
+                        tx.receiver_id,
+                        utils::format_near(tx.actions_agg.deposit as u128)
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }

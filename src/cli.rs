@@ -24,4 +24,9 @@ pub enum Commands {
     },
     /// Start Telegram bot
     Bot,
+    /// Fetch and display recent transactions
+    Txs {
+        /// NEAR account ID
+        account_id: String,
+    },
 }

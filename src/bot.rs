@@ -222,10 +222,11 @@ async fn answer(
                         let mut response = format!("Last 10 transactions for {}:\n", account_id);
                         for tx in txs {
                             response.push_str(&format!(
-                                "\nHash: {}...\nFrom: {}\nTo: {}\n",
+                                "\nHash: {}...\nFrom: {}\nTo: {}\nAmount: {}\n",
                                 &tx.hash[..10],
                                 tx.signer_id,
-                                tx.receiver_id
+                                tx.receiver_id,
+                                utils::format_near(tx.actions_agg.deposit as u128)
                             ));
                         }
                         bot.send_message(msg.chat.id, response).await?;
