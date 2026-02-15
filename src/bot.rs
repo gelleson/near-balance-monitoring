@@ -222,7 +222,8 @@ async fn answer(
                         let mut response = format!("Last 10 transactions for {}:\n", account_id);
                         for tx in txs {
                             response.push_str(&format!(
-                                "\nHash: {}...\nFrom: {}\nTo: {}\nAmount: {}\n",
+                                "\nTime: {}\nHash: {}...\nFrom: {}\nTo: {}\nAmount: {}\n",
+                                utils::format_timestamp(tx.block_timestamp),
                                 &tx.hash[..10],
                                 tx.signer_id,
                                 tx.receiver_id,

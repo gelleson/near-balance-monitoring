@@ -47,7 +47,8 @@ pub async fn run(cli: Cli) -> Result<(), String> {
             } else {
                 println!("Last transactions for {account_id}:");
                 for tx in txs {
-                    println!("- Hash:   {}\n  From:   {}\n  To:     {}\n  Amount: {}\n", 
+                    println!("- Time:   {}\n  Hash:   {}\n  From:   {}\n  To:     {}\n  Amount: {}\n", 
+                        utils::format_timestamp(tx.block_timestamp),
                         tx.hash, 
                         tx.signer_id, 
                         tx.receiver_id,

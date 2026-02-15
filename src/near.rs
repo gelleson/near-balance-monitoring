@@ -35,6 +35,7 @@ pub struct Transaction {
     pub signer_id: String,
     #[serde(rename = "receiver_account_id")]
     pub receiver_id: String,
+    pub block_timestamp: String,
     pub actions_agg: ActionsAgg,
 }
 
@@ -77,11 +78,12 @@ impl NearClient {
         for tx in near_blocks_response.txns {
             if seen_hashes.insert(tx.hash.clone()) {
                 txs.push(tx);
-                if txs.len() >= 10 {
-                    break;
-                }
             }
         }
+
+        // Sort by timestamp descending
+        txs.sort_by(|a, b| b.block_timestamp.cmp(&a.block_timestamp));
+        txs.truncate(10);
 
         Ok(txs)
     }
