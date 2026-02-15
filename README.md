@@ -61,6 +61,8 @@ cargo run -- bot
 - `/add <account_id>` - Add a NEAR account to your watchlist.
 - `/remove <account_id>` - Stop monitoring an account.
 - `/list` - List all accounts you are currently monitoring.
+- `/trxs <account_id>` - List the last 10 transactions for an account.
+- `/balance <account_id>` - Check the current balance of an account.
 
 ## Deployment
 

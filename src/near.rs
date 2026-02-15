@@ -22,6 +22,19 @@ struct AccountView {
     amount: String,
 }
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct Transaction {
+    pub hash: String,
+    pub signer_id: String,
+    pub receiver_id: String,
+    pub block_timestamp: String,
+}
+
+#[derive(Deserialize)]
+struct FastNearResponse {
+    transactions: Vec<Transaction>,
+}
+
 /// Client for interacting with the NEAR Protocol RPC.
 pub struct NearClient {
     client: reqwest::Client,
@@ -33,6 +46,24 @@ impl NearClient {
         Self {
             client: reqwest::Client::new(),
         }
+    }
+
+    /// Fetches the last 10 transactions for a NEAR account.
+    pub async fn fetch_transactions(&self, account_id: &str) -> Result<Vec<Transaction>, String> {
+        let url = format!("https://api.fastnear.com/v1/account/{}/txns?limit=10", account_id);
+        
+        let response = self.client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+        let fast_near_response: FastNearResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {e}"))?;
+
+        Ok(fast_near_response.transactions)
     }
 
     /// Fetches the current balance of a NEAR account in yoctoNEAR.

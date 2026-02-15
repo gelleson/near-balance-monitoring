@@ -27,6 +27,8 @@ enum Command {
     Edit(String),
     #[command(description = "list monitored accounts.")]
     List,
+    #[command(description = "list last 10 transactions. Usage: /trxs <account_id>")]
+    Trxs(String),
 }
 
 /// Internal state for an account being monitored by a specific user/chat.
@@ -203,6 +205,35 @@ async fn answer(
             } else {
                 let list = accounts.join("\n");
                 bot.send_message(msg.chat.id, format!("Monitoring:\n{}", list)).await?;
+            }
+        }
+        Command::Trxs(account_id) => {
+            if account_id.is_empty() {
+                bot.send_message(msg.chat.id, "Please provide an account ID. Usage: /trxs <account_id>").await?;
+                return Ok(());
+            }
+
+            let near_client = NearClient::new();
+            match near_client.fetch_transactions(&account_id).await {
+                Ok(txs) => {
+                    if txs.is_empty() {
+                        bot.send_message(msg.chat.id, format!("No transactions found for {}.", account_id)).await?;
+                    } else {
+                        let mut response = format!("Last 10 transactions for {}:\n", account_id);
+                        for tx in txs {
+                            response.push_str(&format!(
+                                "\nHash: {}...\nFrom: {}\nTo: {}\n",
+                                &tx.hash[..10],
+                                tx.signer_id,
+                                tx.receiver_id
+                            ));
+                        }
+                        bot.send_message(msg.chat.id, response).await?;
+                    }
+                }
+                Err(e) => {
+                    bot.send_message(msg.chat.id, format!("Error fetching transactions: {}", e)).await?;
+                }
             }
         }
     };
