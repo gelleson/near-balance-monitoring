@@ -1,3 +1,12 @@
+//! Command execution logic.
+//!
+//! This module contains the core execution logic for all CLI commands and modes.
+//! It handles:
+//! - One-time balance queries
+//! - Continuous monitoring with polling
+//! - Transaction history display
+//! - Telegram bot initialization
+
 use crate::cli::{Cli, Commands};
 use crate::near::NearClient;
 use crate::utils;
@@ -5,6 +14,40 @@ use crate::bot;
 use std::time::Duration;
 use tokio::time;
 
+/// Executes the CLI command specified in the parsed arguments.
+///
+/// This is the main entry point for command execution. It routes to the
+/// appropriate handler based on the command type.
+///
+/// # Arguments
+///
+/// * `cli` - Parsed CLI arguments containing the command to execute
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful execution, or an error message describing the failure.
+///
+/// # Errors
+///
+/// Returns `Err(String)` if:
+/// - Network requests fail
+/// - NEAR RPC returns an error
+/// - Account doesn't exist
+/// - Telegram bot token is invalid (for bot mode)
+///
+/// # Examples
+///
+/// ```no_run
+/// # use near_balance_monitor::cli::Cli;
+/// # use near_balance_monitor::commands;
+/// # use clap::Parser;
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), String> {
+/// let cli = Cli::parse();
+/// commands::run(cli).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn run(cli: Cli) -> Result<(), String> {
     let near_client = NearClient::new();
 
@@ -61,6 +104,25 @@ pub async fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
+/// Prints a formatted balance message with timestamp.
+///
+/// Outputs the balance in a human-readable format with the current timestamp
+/// and account ID.
+///
+/// # Arguments
+///
+/// * `account_id` - The NEAR account ID
+/// * `balance` - The balance in yoctoNEAR
+///
+/// # Examples
+///
+/// ```no_run
+/// # fn main() {
+/// # let account_id = "example.near";
+/// # let balance = 1000000000000000000000000u128;
+/// // Output: [2026-02-15 10:30:45 PST] example.near — 1.0000 NEAR
+/// # }
+/// ```
 fn print_balance(account_id: &str, balance: u128) {
     println!(
         "[{}] {} — {}",

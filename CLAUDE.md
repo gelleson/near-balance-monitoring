@@ -118,6 +118,38 @@ just deploy
 - Use `log::info!`, `log::error!`, `log::debug!` macros
 - Set level via `RUST_LOG` environment variable
 
+**Documentation (Rustdoc)**:
+- **ALWAYS** add rustdoc comments to all public items (functions, structs, enums, modules, traits, methods)
+- Use triple-slash comments (`///`) for item documentation
+- Document all function parameters using `` # Arguments`` section
+- Document return values and error conditions using `` # Returns`` and `` # Errors`` sections
+- Add `` # Examples`` for non-trivial public functions
+- Add `` # Panics`` section if the function can panic
+- Use proper markdown formatting: code blocks with ` ```rust `, inline code with backticks
+- Document struct fields with per-field `///` comments
+- Start all docs with a concise one-line summary, followed by detailed explanation if needed
+
+Example:
+```rust
+/// Fetches the current balance for a NEAR account.
+///
+/// # Arguments
+///
+/// * `account_id` - The NEAR account identifier (e.g., "alice.near")
+///
+/// # Returns
+///
+/// Returns the account balance in yoctoNEAR (1 NEAR = 10^24 yoctoNEAR) on success,
+/// or an error message string on failure.
+///
+/// # Errors
+///
+/// Returns an error if the RPC request fails or the account doesn't exist.
+pub async fn get_balance(&self, account_id: &str) -> Result<u128, String> {
+    // implementation
+}
+```
+
 ## Common Development Tasks
 
 **Add new CLI command**:

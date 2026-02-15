@@ -1,8 +1,32 @@
+//! NEAR Protocol RPC client.
+//!
+//! This module provides a client for interacting with the NEAR Protocol RPC API
+//! and NearBlocks API. It handles balance queries and transaction fetching.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use near_balance_monitor::near::NearClient;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), String> {
+//!     let client = NearClient::new();
+//!     let balance = client.fetch_balance("example.near").await?;
+//!     println!("Balance: {} yoctoNEAR", balance);
+//!     Ok(())
+//! }
+//! ```
+
 use serde::{Deserialize, Serialize};
 
+/// NEAR RPC endpoint URL.
 const NEAR_RPC_URL: &str = "https://h36uashbwvxlllkjfzzaxgfu-near-rpc.defuse.org";
+
+/// Conversion factor from yoctoNEAR to NEAR.
+/// 1 NEAR = 10^24 yoctoNEAR.
 pub const YOCTO_NEAR: f64 = 1e24;
 
+/// JSON-RPC request structure for NEAR RPC calls.
 #[derive(Serialize)]
 struct RpcRequest {
     jsonrpc: &'static str,
@@ -11,53 +35,131 @@ struct RpcRequest {
     params: serde_json::Value,
 }
 
+/// JSON-RPC response structure from NEAR RPC.
 #[derive(Deserialize)]
 struct RpcResponse {
     result: Option<AccountView>,
     error: Option<serde_json::Value>,
 }
 
+/// Account view returned by the NEAR RPC `view_account` method.
 #[derive(Deserialize)]
 struct AccountView {
+    /// Account balance in yoctoNEAR as a string.
     amount: String,
 }
 
+/// Aggregated transaction actions data.
+///
+/// Contains summarized information about transaction actions,
+/// particularly the total deposit amount.
 #[derive(Deserialize, Debug, Clone)]
 pub struct ActionsAgg {
+    /// Total deposit amount in the transaction.
     pub deposit: f64,
 }
 
+/// NEAR blockchain transaction information.
+///
+/// Represents a transaction fetched from the NearBlocks API.
 #[derive(Deserialize, Debug, Clone)]
 pub struct Transaction {
+    /// Transaction hash (unique identifier).
     #[serde(rename = "transaction_hash")]
     pub hash: String,
+    /// Account that signed/initiated the transaction.
     #[serde(rename = "predecessor_account_id")]
     pub signer_id: String,
+    /// Account that received the transaction.
     #[serde(rename = "receiver_account_id")]
     pub receiver_id: String,
+    /// Block timestamp in nanoseconds (as a string).
     pub block_timestamp: String,
+    /// Aggregated actions data (deposits, etc.).
     pub actions_agg: ActionsAgg,
 }
 
+/// Response structure from NearBlocks API transaction endpoint.
 #[derive(Deserialize)]
 struct NearBlocksResponse {
+    /// List of transactions.
     txns: Vec<Transaction>,
 }
 
-/// Client for interacting with the NEAR Protocol RPC.
+/// Client for interacting with the NEAR Protocol RPC and NearBlocks API.
+///
+/// This client provides methods to:
+/// - Fetch account balances from NEAR RPC
+/// - Fetch transaction history from NearBlocks API
+///
+/// # Examples
+///
+/// ```no_run
+/// # use near_balance_monitor::near::NearClient;
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), String> {
+/// let client = NearClient::new();
+/// let balance = client.fetch_balance("example.near").await?;
+/// let transactions = client.fetch_transactions("example.near").await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct NearClient {
+    /// Internal HTTP client for making requests.
     client: reqwest::Client,
 }
 
 impl NearClient {
-    /// Creates a new `NearClient` with a default `reqwest` client.
+    /// Creates a new `NearClient` instance.
+    ///
+    /// Initializes a default `reqwest` HTTP client for making RPC requests.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use near_balance_monitor::near::NearClient;
+    ///
+    /// let client = NearClient::new();
+    /// ```
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::new(),
         }
     }
 
-    /// Fetches the last 10 transactions for a NEAR account.
+    /// Fetches the last 10 unique transactions for a NEAR account.
+    ///
+    /// Queries the NearBlocks API for transaction history, deduplicates by hash,
+    /// sorts by timestamp (descending), and returns up to 10 transactions.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The NEAR account ID (e.g., "example.near")
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(Vec<Transaction>)` with up to 10 transactions, or an error message.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(String)` if:
+    /// - The HTTP request fails
+    /// - The response cannot be parsed
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use near_balance_monitor::near::NearClient;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), String> {
+    /// let client = NearClient::new();
+    /// let transactions = client.fetch_transactions("example.near").await?;
+    /// for tx in transactions {
+    ///     println!("Transaction: {}", tx.hash);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn fetch_transactions(&self, account_id: &str) -> Result<Vec<Transaction>, String> {
         let url = format!("https://api.nearblocks.io/v1/account/{}/txns?limit=25", account_id);
         
@@ -89,9 +191,39 @@ impl NearClient {
     }
 
     /// Fetches the current balance of a NEAR account in yoctoNEAR.
-    /// 
+    ///
+    /// Queries the NEAR RPC `view_account` method with finality set to "final"
+    /// to get the most recent confirmed balance.
+    ///
     /// # Arguments
-    /// * `account_id` - The NEAR account ID (e.g., "example.near").
+    ///
+    /// * `account_id` - The NEAR account ID (e.g., "example.near")
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(u128)` with the balance in yoctoNEAR (1 NEAR = 10^24 yoctoNEAR),
+    /// or an error message.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(String)` if:
+    /// - The HTTP request fails
+    /// - The RPC returns an error (e.g., account not found)
+    /// - The response cannot be parsed
+    /// - The balance amount cannot be parsed as u128
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use near_balance_monitor::near::NearClient;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), String> {
+    /// let client = NearClient::new();
+    /// let balance = client.fetch_balance("example.near").await?;
+    /// println!("Balance: {} yoctoNEAR", balance);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn fetch_balance(&self, account_id: &str) -> Result<u128, String> {
         let request = RpcRequest {
             jsonrpc: "2.0",

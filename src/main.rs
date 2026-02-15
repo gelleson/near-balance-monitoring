@@ -1,3 +1,27 @@
+//! NEAR Balance Monitor
+//!
+//! A lightweight Rust application for monitoring NEAR Protocol account balances.
+//!
+//! # Features
+//!
+//! - **CLI Mode**: Query balances directly from your terminal
+//! - **Monitor Mode**: Watch a specific account for changes with a configurable interval
+//! - **Telegram Bot**: Multi-user support with real-time alerts
+//!
+//! # Usage
+//!
+//! ```bash
+//! # Check a single balance
+//! near-monitor balance example.near
+//!
+//! # Monitor an account
+//! near-monitor monitor example.near --interval 30
+//!
+//! # Run Telegram bot
+//! export TELOXIDE_TOKEN="your-token"
+//! near-monitor bot
+//! ```
+
 mod cli;
 mod commands;
 mod near;
