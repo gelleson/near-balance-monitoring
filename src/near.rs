@@ -27,7 +27,6 @@ pub struct Transaction {
     pub hash: String,
     pub signer_id: String,
     pub receiver_id: String,
-    pub block_timestamp: String,
 }
 
 #[derive(Deserialize)]
