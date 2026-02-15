@@ -164,6 +164,14 @@ pub async fn run() -> Result<(), String> {
     let monitored_accounts_for_loop = monitored_accounts.clone();
     let bot_for_loop = bot.clone();
 
+    // Notify users about new deployment/restart
+    {
+        let users = user_manager.lock().await.get_all_users();
+        for user_id in users {
+            let _ = bot.send_message(ChatId(user_id), "🚀 New version deployed and bot restarted!").await;
+        }
+    }
+
     // Spawn monitoring loop
     tokio::spawn(async move {
         let near_client = NearClient::new();
