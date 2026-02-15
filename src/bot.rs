@@ -59,8 +59,6 @@ enum Command {
     List,
     #[command(description = "list last 10 transactions. Usage: /trxs <account_id>")]
     Trxs(String),
-    #[command(description = "broadcast a message to all users.")]
-    Broadcast(String),
 }
 
 /// Manages the persistence of user IDs.
@@ -377,25 +375,6 @@ async fn answer(
                     bot.send_message(msg.chat.id, format!("Error fetching transactions: {}", e)).await?;
                 }
             }
-        }
-        Command::Broadcast(text) => {
-            if text.is_empty() {
-                bot.send_message(msg.chat.id, "Usage: /broadcast <message>").await?;
-                return Ok(());
-            }
-
-            let users = {
-                let guard = user_manager.lock().await;
-                guard.get_all_users()
-            };
-
-            bot.send_message(msg.chat.id, format!("Broadcasting to {} users...", users.len())).await?;
-
-            for user_id in users {
-                let _ = bot.send_message(ChatId(user_id), &text).await;
-            }
-
-            bot.send_message(msg.chat.id, "Broadcast complete.").await?;
         }
     };
     Ok(())
