@@ -77,7 +77,7 @@ pub async fn run() -> Result<(), String> {
             for account in accounts_to_check {
                 match near_client.fetch_balance(&account.account_id).await {
                     Ok(current_balance) => {
-                        let changed = account.last_balance.map_or(true, |prev| prev != current_balance);
+                        let changed = account.last_balance != Some(current_balance);
                         if changed {
                             let message = format!(
                                 "🚨 Balance Update for {}!\n\nOld: {}\nNew: {}",

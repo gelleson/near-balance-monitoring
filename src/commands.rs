@@ -25,7 +25,7 @@ pub async fn run(cli: Cli) -> Result<(), String> {
                 ticker.tick().await;
                 match near_client.fetch_balance(&account_id).await {
                     Ok(balance) => {
-                        let changed = previous_balance.map_or(true, |prev| prev != balance);
+                        let changed = previous_balance != Some(balance);
                         if changed {
                             print_balance(&account_id, balance);
                             previous_balance = Some(balance);
