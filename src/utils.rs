@@ -67,15 +67,24 @@ pub fn now_timestamp() -> String {
 /// // Example output: "2024-02-15 10:13:20 PST"
 /// ```
 pub fn format_timestamp(ns_str: String) -> String {
-    let ns = ns_str.parse::<u128>().unwrap_or(0);
+    let ns = match ns_str.parse::<u128>() {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!("Failed to parse timestamp timestamp={}: {}", ns_str, e);
+            return "Invalid Timestamp".to_string();
+        }
+    };
     let secs = (ns / 1_000_000_000) as i64;
     let nsecs = (ns % 1_000_000_000) as u32;
-    
+
     match Utc.timestamp_opt(secs, nsecs) {
         chrono::LocalResult::Single(dt) => {
             let local_dt = dt.with_timezone(&Local);
             local_dt.format("%Y-%m-%d %H:%M:%S %Z").to_string()
         },
-        _ => "Invalid Timestamp".to_string(),
+        _ => {
+            log::warn!("Failed to convert timestamp secs={} nsecs={}", secs, nsecs);
+            "Invalid Timestamp".to_string()
+        }
     }
 }
