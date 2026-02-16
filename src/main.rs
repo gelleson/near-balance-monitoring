@@ -22,11 +22,12 @@
 //! near-monitor bot
 //! ```
 
+mod bot;
 mod cli;
 mod commands;
 mod near;
+mod persistence;
 mod utils;
-mod bot;
 
 use clap::Parser;
 use cli::Cli;

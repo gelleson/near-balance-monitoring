@@ -17,8 +17,8 @@
 //! }
 //! ```
 
-use std::time::Instant;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 /// NEAR RPC endpoint URL.
 const NEAR_RPC_URL: &str = "https://h36uashbwvxlllkjfzzaxgfu-near-rpc.defuse.org";
@@ -163,27 +163,36 @@ impl NearClient {
     /// ```
     pub async fn fetch_transactions(&self, account_id: &str) -> Result<Vec<Transaction>, String> {
         log::debug!("Fetching transactions account={} limit=25", account_id);
-        let url = format!("https://api.nearblocks.io/v1/account/{}/txns?limit=25", account_id);
+        let url = format!(
+            "https://api.nearblocks.io/v1/account/{}/txns?limit=25",
+            account_id
+        );
 
         let start = Instant::now();
-        let response = self.client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                log::error!("NearBlocks API request failed account={}: {}", account_id, e);
-                format!("HTTP request failed: {e}")
-            })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            log::error!(
+                "NearBlocks API request failed account={}: {}",
+                account_id,
+                e
+            );
+            format!("HTTP request failed: {e}")
+        })?;
 
-        log::debug!("NearBlocks API responded account={} duration_ms={} status={:?}", account_id, start.elapsed().as_millis(), response.status());
+        log::debug!(
+            "NearBlocks API responded account={} duration_ms={} status={:?}",
+            account_id,
+            start.elapsed().as_millis(),
+            response.status()
+        );
 
-        let near_blocks_response: NearBlocksResponse = response
-            .json()
-            .await
-            .map_err(|e| {
-                log::error!("Failed to parse NearBlocks response account={}: {}", account_id, e);
-                format!("Failed to parse response: {e}")
-            })?;
+        let near_blocks_response: NearBlocksResponse = response.json().await.map_err(|e| {
+            log::error!(
+                "Failed to parse NearBlocks response account={}: {}",
+                account_id,
+                e
+            );
+            format!("Failed to parse response: {e}")
+        })?;
 
         let mut txs = Vec::new();
         let mut seen_hashes = std::collections::HashSet::new();
@@ -194,13 +203,21 @@ impl NearClient {
             }
         }
 
-        log::debug!("Deduplicated transactions account={} unique_count={}", account_id, txs.len());
+        log::debug!(
+            "Deduplicated transactions account={} unique_count={}",
+            account_id,
+            txs.len()
+        );
 
         // Sort by timestamp descending
         txs.sort_by(|a, b| b.block_timestamp.cmp(&a.block_timestamp));
         txs.truncate(10);
 
-        log::info!("Successfully fetched transactions account={} count={}", account_id, txs.len());
+        log::info!(
+            "Successfully fetched transactions account={} count={}",
+            account_id,
+            txs.len()
+        );
 
         Ok(txs)
     }
@@ -240,7 +257,11 @@ impl NearClient {
     /// # }
     /// ```
     pub async fn fetch_balance(&self, account_id: &str) -> Result<u128, String> {
-        log::debug!("Fetching balance account={} endpoint={}", account_id, NEAR_RPC_URL);
+        log::debug!(
+            "Fetching balance account={} endpoint={}",
+            account_id,
+            NEAR_RPC_URL
+        );
 
         let request = RpcRequest {
             jsonrpc: "2.0",
@@ -254,22 +275,25 @@ impl NearClient {
         };
 
         let start = Instant::now();
-        let response = self.client
+        let response = self
+            .client
             .post(NEAR_RPC_URL)
             .json(&request)
             .send()
             .await
             .map_err(|e| format!("HTTP request failed: {e}"))?;
 
-        log::debug!("RPC request completed account={} duration_ms={} status={:?}", account_id, start.elapsed().as_millis(), response.status());
+        log::debug!(
+            "RPC request completed account={} duration_ms={} status={:?}",
+            account_id,
+            start.elapsed().as_millis(),
+            response.status()
+        );
 
-        let rpc_response: RpcResponse = response
-            .json()
-            .await
-            .map_err(|e| {
-                log::error!("Failed to parse RPC response account={}: {}", account_id, e);
-                format!("Failed to parse response: {e}")
-            })?;
+        let rpc_response: RpcResponse = response.json().await.map_err(|e| {
+            log::error!("Failed to parse RPC response account={}: {}", account_id, e);
+            format!("Failed to parse response: {e}")
+        })?;
 
         if let Some(error) = rpc_response.error {
             log::error!("RPC error account={}: {:?}", account_id, error);
@@ -281,15 +305,20 @@ impl NearClient {
             "No result in response"
         })?;
 
-        let balance = result
-            .amount
-            .parse::<u128>()
-            .map_err(|e| {
-                log::error!("Failed to parse balance amount account={}: {}", account_id, e);
-                format!("Failed to parse amount: {e}")
-            })?;
+        let balance = result.amount.parse::<u128>().map_err(|e| {
+            log::error!(
+                "Failed to parse balance amount account={}: {}",
+                account_id,
+                e
+            );
+            format!("Failed to parse amount: {e}")
+        })?;
 
-        log::debug!("Successfully fetched balance account={} balance_yocto={}", account_id, balance);
+        log::debug!(
+            "Successfully fetched balance account={} balance_yocto={}",
+            account_id,
+            balance
+        );
 
         Ok(balance)
     }

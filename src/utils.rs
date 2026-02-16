@@ -3,7 +3,7 @@
 //! This module provides helper functions for converting between different
 //! representations of NEAR balances and timestamps.
 
-use chrono::{Local, Utc, TimeZone};
+use chrono::{Local, TimeZone, Utc};
 
 /// Formats a yoctoNEAR balance into a human-readable NEAR string.
 ///
@@ -81,7 +81,7 @@ pub fn format_timestamp(ns_str: String) -> String {
         chrono::LocalResult::Single(dt) => {
             let local_dt = dt.with_timezone(&Local);
             local_dt.format("%Y-%m-%d %H:%M:%S %Z").to_string()
-        },
+        }
         _ => {
             log::warn!("Failed to convert timestamp secs={} nsecs={}", secs, nsecs);
             "Invalid Timestamp".to_string()

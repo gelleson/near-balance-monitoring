@@ -7,10 +7,10 @@
 //! - Transaction history display
 //! - Telegram bot initialization
 
+use crate::bot;
 use crate::cli::{Cli, Commands};
 use crate::near::NearClient;
 use crate::utils;
-use crate::bot;
 use std::time::Duration;
 use tokio::time;
 
@@ -69,7 +69,11 @@ pub async fn run(cli: Cli) -> Result<(), String> {
             account_id,
             interval,
         } => {
-            log::info!("Monitor started account={} interval={}s", account_id, interval);
+            log::info!(
+                "Monitor started account={} interval={}s",
+                account_id,
+                interval
+            );
             println!("Monitoring {account_id} every {interval}s...");
             let mut ticker = time::interval(Duration::from_secs(interval));
             let mut previous_balance: Option<u128> = None;
@@ -81,14 +85,23 @@ pub async fn run(cli: Cli) -> Result<(), String> {
             loop {
                 ticker.tick().await;
                 poll_count += 1;
-                log::debug!("Monitor poll account={} poll_count={}", account_id, poll_count);
+                log::debug!(
+                    "Monitor poll account={} poll_count={}",
+                    account_id,
+                    poll_count
+                );
 
                 match near_client.fetch_balance(&account_id).await {
                     Ok(balance) => {
                         success_count += 1;
                         let changed = previous_balance != Some(balance);
                         if changed {
-                            log::info!("Balance changed account={} old={:?} new={}", account_id, previous_balance, balance);
+                            log::info!(
+                                "Balance changed account={} old={:?} new={}",
+                                account_id,
+                                previous_balance,
+                                balance
+                            );
                             print_balance(&account_id, balance);
                             previous_balance = Some(balance);
                         }
@@ -101,8 +114,14 @@ pub async fn run(cli: Cli) -> Result<(), String> {
                 }
 
                 if poll_count % 10 == 0 {
-                    log::info!("Monitor heartbeat account={} uptime_secs={} polls={} success={} errors={}",
-                               account_id, start_time.elapsed().as_secs(), poll_count, success_count, error_count);
+                    log::info!(
+                        "Monitor heartbeat account={} uptime_secs={} polls={} success={} errors={}",
+                        account_id,
+                        start_time.elapsed().as_secs(),
+                        poll_count,
+                        success_count,
+                        error_count
+                    );
                 }
             }
         }
@@ -117,10 +136,15 @@ pub async fn run(cli: Cli) -> Result<(), String> {
                 log::warn!("No transactions found account={}", account_id);
                 println!("No transactions found for {account_id}");
             } else {
-                log::info!("Displaying transactions account={} count={}", account_id, txs.len());
+                log::info!(
+                    "Displaying transactions account={} count={}",
+                    account_id,
+                    txs.len()
+                );
                 println!("Last transactions for {account_id}:");
                 for tx in txs {
-                    println!("- Time:   {}\n  Hash:   {}\n  From:   {}\n  To:     {}\n  Amount: {}\n",
+                    println!(
+                        "- Time:   {}\n  Hash:   {}\n  From:   {}\n  To:     {}\n  Amount: {}\n",
                         utils::format_timestamp(tx.block_timestamp),
                         tx.hash,
                         tx.signer_id,

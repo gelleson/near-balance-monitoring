@@ -7,9 +7,11 @@
 //!
 //! # Architecture
 //!
-//! - **Shared State**: `Arc<Mutex<Vec<MonitoredAccount>>>` holds all monitored accounts
+//! - **Persistent State**: `Arc<Mutex<AccountPersistenceManager>>` holds all monitored accounts
+//!   and persists them to `monitored_accounts.json` for durability across restarts
 //! - **Background Task**: Runs in a separate tokio task, polling every 60 seconds
 //! - **Multi-User**: Each user (chat ID) has their own list of monitored accounts
+//! - **Data Persistence**: All CRUD operations automatically save to disk using atomic writes
 //!
 //! # Bot Commands
 //!
@@ -21,17 +23,19 @@
 //! - `/list` - List monitored accounts
 //! - `/trxs <account>` - Show recent transactions
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use teloxide::prelude::*;
 use teloxide::utils::command::BotCommands;
 use tokio::sync::Mutex;
 use tokio::time;
-use std::time::Duration;
 
 use crate::near::NearClient;
+use crate::persistence::AccountPersistenceManager;
 use crate::utils;
 
 /// Telegram bot commands.
@@ -39,7 +43,10 @@ use crate::utils;
 /// These commands are automatically parsed by teloxide's `BotCommands` derive macro.
 /// Command descriptions appear in the bot's help menu.
 #[derive(BotCommands, Clone, Debug)]
-#[command(rename_rule = "lowercase", description = "These commands are supported:")]
+#[command(
+    rename_rule = "lowercase",
+    description = "These commands are supported:"
+)]
 enum Command {
     #[command(description = "display this text.")]
     Help,
@@ -84,7 +91,11 @@ impl UserManager {
         } else {
             HashSet::new()
         };
-        log::info!("User manager loaded user_count={} file={}", users.len(), file_path);
+        log::info!(
+            "User manager loaded user_count={} file={}",
+            users.len(),
+            file_path
+        );
         Self {
             users,
             file_path: file_path.to_string(),
@@ -110,7 +121,11 @@ impl UserManager {
     fn save(&self) {
         if let Ok(data) = serde_json::to_string(&self.users) {
             match fs::write(&self.file_path, data) {
-                Ok(_) => log::debug!("User list saved user_count={} file={}", self.users.len(), self.file_path),
+                Ok(_) => log::debug!(
+                    "User list saved user_count={} file={}",
+                    self.users.len(),
+                    self.file_path
+                ),
                 Err(e) => log::error!("Failed to save user list file={}: {}", self.file_path, e),
             }
         } else {
@@ -128,15 +143,36 @@ impl UserManager {
 ///
 /// Each instance represents one account being watched by one user.
 /// The same account can be monitored by multiple users (multiple instances with different chat IDs).
-#[derive(Clone)]
-struct MonitoredAccount {
+#[derive(Clone, Serialize, Deserialize)]
+pub struct MonitoredAccount {
     /// NEAR account ID being monitored (e.g., "example.near")
-    account_id: String,
+    pub account_id: String,
     /// Last known balance in yoctoNEAR. Used to detect changes.
     /// `None` means the initial balance hasn't been fetched yet.
-    last_balance: Option<u128>,
+    pub last_balance: Option<u128>,
     /// The Telegram chat ID to send notifications to when balance changes.
-    chat_id: ChatId,
+    #[serde(
+        serialize_with = "serialize_chat_id",
+        deserialize_with = "deserialize_chat_id"
+    )]
+    pub chat_id: ChatId,
+}
+
+/// Serializes a ChatId as an i64.
+fn serialize_chat_id<S>(chat_id: &ChatId, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_i64(chat_id.0)
+}
+
+/// Deserializes a ChatId from an i64.
+fn deserialize_chat_id<'de, D>(deserializer: D) -> Result<ChatId, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let id = i64::deserialize(deserializer)?;
+    Ok(ChatId(id))
 }
 
 /// Starts the Telegram bot and the background monitoring loop.
@@ -180,8 +216,11 @@ pub async fn run() -> Result<(), String> {
     log::info!("Bot initialized successfully");
 
     // Shared state: List of monitored accounts and known users
-    let monitored_accounts: Arc<Mutex<Vec<MonitoredAccount>>> = Arc::new(Mutex::new(Vec::new()));
-    let user_manager: Arc<Mutex<UserManager>> = Arc::new(Mutex::new(UserManager::load("users.json")));
+    let monitored_accounts: Arc<Mutex<AccountPersistenceManager>> = Arc::new(Mutex::new(
+        AccountPersistenceManager::load("monitored_accounts.json"),
+    ));
+    let user_manager: Arc<Mutex<UserManager>> =
+        Arc::new(Mutex::new(UserManager::load("users.json")));
 
     let monitored_accounts_for_loop = monitored_accounts.clone();
     let bot_for_loop = bot.clone();
@@ -190,16 +229,29 @@ pub async fn run() -> Result<(), String> {
     {
         let users = user_manager.lock().await.get_all_users();
         log::info!("Loaded user manager user_count={}", users.len());
-        log::info!("Broadcasting deployment notification user_count={}", users.len());
+        log::info!(
+            "Broadcasting deployment notification user_count={}",
+            users.len()
+        );
         let mut success_count = 0;
         let mut fail_count = 0;
         for user_id in users {
-            match bot.send_message(ChatId(user_id), "🚀 New version deployed and bot restarted!").await {
+            match bot
+                .send_message(
+                    ChatId(user_id),
+                    "🚀 New version deployed and bot restarted!",
+                )
+                .await
+            {
                 Ok(_) => success_count += 1,
                 Err(_) => fail_count += 1,
             }
         }
-        log::info!("Deployment notifications sent successful={} failed={}", success_count, fail_count);
+        log::info!(
+            "Deployment notifications sent successful={} failed={}",
+            success_count,
+            fail_count
+        );
     }
 
     // Spawn monitoring loop
@@ -216,38 +268,61 @@ pub async fn run() -> Result<(), String> {
 
             let accounts_to_check: Vec<MonitoredAccount> = {
                 let guard = monitored_accounts_for_loop.lock().await;
-                guard.clone()
+                guard.get_all_accounts()
             };
 
             let account_count = accounts_to_check.len();
-            log::debug!("Background poll cycle account_count={} cycle={}", account_count, cycle_count);
+            log::debug!(
+                "Background poll cycle account_count={} cycle={}",
+                account_count,
+                cycle_count
+            );
 
             for account in &accounts_to_check {
-                log::debug!("Polling account={} chat_id={}", account.account_id, account.chat_id);
+                log::debug!(
+                    "Polling account={} chat_id={}",
+                    account.account_id,
+                    account.chat_id
+                );
                 match near_client.fetch_balance(&account.account_id).await {
                     Ok(current_balance) => {
                         let changed = account.last_balance != Some(current_balance);
                         if changed {
-                            log::info!("Balance change detected account={} chat_id={} old={:?} new={}",
-                                      account.account_id, account.chat_id, account.last_balance, current_balance);
+                            log::info!(
+                                "Balance change detected account={} chat_id={} old={:?} new={}",
+                                account.account_id,
+                                account.chat_id,
+                                account.last_balance,
+                                current_balance
+                            );
                             let message = format!(
                                 "🚨 Balance Update for {}!\n\nOld: {}\nNew: {}",
                                 account.account_id,
-                                account.last_balance.map_or("Unknown".to_string(), utils::format_near),
+                                account
+                                    .last_balance
+                                    .map_or("Unknown".to_string(), utils::format_near),
                                 utils::format_near(current_balance)
                             );
 
-                            if let Err(e) = bot_for_loop.send_message(account.chat_id, message).await {
+                            if let Err(e) =
+                                bot_for_loop.send_message(account.chat_id, message).await
+                            {
                                 log::error!("Failed to send alert to {}: {}", account.chat_id, e);
                             }
 
-                            // Update state
+                            // Persist updated balance
                             let mut guard = monitored_accounts_for_loop.lock().await;
-                            if let Some(acc) = guard.iter_mut().find(|a| a.account_id == account.account_id && a.chat_id == account.chat_id) {
-                                acc.last_balance = Some(current_balance);
-                                log::debug!("Updated account state account={} chat_id={} balance={}",
-                                           account.account_id, account.chat_id, current_balance);
-                            }
+                            guard.update_balance(
+                                &account.account_id,
+                                account.chat_id,
+                                current_balance,
+                            );
+                            log::debug!(
+                                "Updated account state account={} chat_id={} balance={}",
+                                account.account_id,
+                                account.chat_id,
+                                current_balance
+                            );
                         }
                     }
                     Err(e) => {
@@ -257,8 +332,12 @@ pub async fn run() -> Result<(), String> {
             }
 
             if cycle_count % 10 == 0 {
-                log::info!("Background monitor heartbeat cycle={} uptime_mins={} active_accounts={}",
-                           cycle_count, task_start.elapsed().as_secs() / 60, account_count);
+                log::info!(
+                    "Background monitor heartbeat cycle={} uptime_mins={} active_accounts={}",
+                    cycle_count,
+                    task_start.elapsed().as_secs() / 60,
+                    account_count
+                );
             }
         }
     });
@@ -267,9 +346,7 @@ pub async fn run() -> Result<(), String> {
     Command::repl(bot, move |bot, msg, cmd| {
         let monitored_accounts = monitored_accounts.clone();
         let user_manager = user_manager.clone();
-        async move {
-            answer(bot, msg, cmd, monitored_accounts, user_manager).await
-        }
+        async move { answer(bot, msg, cmd, monitored_accounts, user_manager).await }
     })
     .await;
 
@@ -301,10 +378,14 @@ async fn answer(
     bot: Bot,
     msg: Message,
     cmd: Command,
-    monitored_accounts: Arc<Mutex<Vec<MonitoredAccount>>>,
+    monitored_accounts: Arc<Mutex<AccountPersistenceManager>>,
     user_manager: Arc<Mutex<UserManager>>,
 ) -> ResponseResult<()> {
-    log::debug!("Received message chat_id={} command={:?}", msg.chat.id.0, cmd);
+    log::debug!(
+        "Received message chat_id={} command={:?}",
+        msg.chat.id.0,
+        cmd
+    );
 
     // Record user
     {
@@ -317,23 +398,54 @@ async fn answer(
     match cmd {
         Command::Help => {
             log::info!("Help command chat_id={}", msg.chat.id.0);
-            if let Err(e) = bot.send_message(msg.chat.id, Command::descriptions().to_string()).await {
-                log::error!("Failed to send Help response chat_id={}: {}", msg.chat.id.0, e);
+            if let Err(e) = bot
+                .send_message(msg.chat.id, Command::descriptions().to_string())
+                .await
+            {
+                log::error!(
+                    "Failed to send Help response chat_id={}: {}",
+                    msg.chat.id.0,
+                    e
+                );
                 return Err(e);
             }
         }
         Command::Start => {
             log::info!("Start command chat_id={}", msg.chat.id.0);
-            if let Err(e) = bot.send_message(msg.chat.id, "Welcome to the NEAR Balance Monitor Bot! Use /help to see available commands.").await {
-                log::error!("Failed to send Start response chat_id={}: {}", msg.chat.id.0, e);
+            if let Err(e) = bot
+                .send_message(
+                    msg.chat.id,
+                    "Welcome to the NEAR Balance Monitor Bot! Use /help to see available commands.",
+                )
+                .await
+            {
+                log::error!(
+                    "Failed to send Start response chat_id={}: {}",
+                    msg.chat.id.0,
+                    e
+                );
                 return Err(e);
             }
         }
         Command::Balance(account_id) => {
-            log::info!("Balance command chat_id={} account={}", msg.chat.id.0, account_id);
+            log::info!(
+                "Balance command chat_id={} account={}",
+                msg.chat.id.0,
+                account_id
+            );
             if account_id.is_empty() {
-                if let Err(e) = bot.send_message(msg.chat.id, "Please provide an account ID. Usage: /balance <account_id>").await {
-                    log::error!("Failed to send Balance validation error chat_id={}: {}", msg.chat.id.0, e);
+                if let Err(e) = bot
+                    .send_message(
+                        msg.chat.id,
+                        "Please provide an account ID. Usage: /balance <account_id>",
+                    )
+                    .await
+                {
+                    log::error!(
+                        "Failed to send Balance validation error chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
                 return Ok(());
@@ -342,68 +454,168 @@ async fn answer(
             let near_client = NearClient::new();
             match near_client.fetch_balance(&account_id).await {
                 Ok(balance) => {
-                    log::info!("Balance command completed chat_id={} account={} balance={}", msg.chat.id.0, account_id, balance);
-                    if let Err(e) = bot.send_message(msg.chat.id, format!("Balance for {}: {}", account_id, utils::format_near(balance))).await {
-                        log::error!("Failed to send Balance success response chat_id={}: {}", msg.chat.id.0, e);
+                    log::info!(
+                        "Balance command completed chat_id={} account={} balance={}",
+                        msg.chat.id.0,
+                        account_id,
+                        balance
+                    );
+                    if let Err(e) = bot
+                        .send_message(
+                            msg.chat.id,
+                            format!(
+                                "Balance for {}: {}",
+                                account_id,
+                                utils::format_near(balance)
+                            ),
+                        )
+                        .await
+                    {
+                        log::error!(
+                            "Failed to send Balance success response chat_id={}: {}",
+                            msg.chat.id.0,
+                            e
+                        );
                         return Err(e);
                     }
                 }
                 Err(e) => {
-                    log::error!("Balance command failed chat_id={} account={}: {}", msg.chat.id.0, account_id, e);
-                    if let Err(send_err) = bot.send_message(msg.chat.id, format!("Error fetching balance: {}", e)).await {
-                        log::error!("Failed to send Balance error response chat_id={}: {}", msg.chat.id.0, send_err);
+                    log::error!(
+                        "Balance command failed chat_id={} account={}: {}",
+                        msg.chat.id.0,
+                        account_id,
+                        e
+                    );
+                    if let Err(send_err) = bot
+                        .send_message(msg.chat.id, format!("Error fetching balance: {}", e))
+                        .await
+                    {
+                        log::error!(
+                            "Failed to send Balance error response chat_id={}: {}",
+                            msg.chat.id.0,
+                            send_err
+                        );
                         return Err(send_err);
                     }
                 }
             }
         }
         Command::Add(account_id) => {
-            log::info!("Add command chat_id={} account={}", msg.chat.id.0, account_id);
+            log::info!(
+                "Add command chat_id={} account={}",
+                msg.chat.id.0,
+                account_id
+            );
             if account_id.is_empty() {
-                if let Err(e) = bot.send_message(msg.chat.id, "Please provide an account ID.").await {
-                    log::error!("Failed to send Add validation error chat_id={}: {}", msg.chat.id.0, e);
+                if let Err(e) = bot
+                    .send_message(msg.chat.id, "Please provide an account ID.")
+                    .await
+                {
+                    log::error!(
+                        "Failed to send Add validation error chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
                 return Ok(());
             }
 
             let mut guard = monitored_accounts.lock().await;
-            // Check if already monitored
-            if guard.iter().any(|acc| acc.account_id == account_id && acc.chat_id == msg.chat.id) {
-                log::warn!("Add command: already monitored chat_id={} account={}", msg.chat.id.0, account_id);
-                if let Err(e) = bot.send_message(msg.chat.id, format!("{} is already being monitored.", account_id)).await {
-                    log::error!("Failed to send Add duplicate response chat_id={}: {}", msg.chat.id.0, e);
+            let account = MonitoredAccount {
+                account_id: account_id.clone(),
+                last_balance: None,
+                chat_id: msg.chat.id,
+            };
+
+            if guard.add_account(account) {
+                log::info!(
+                    "Account added to monitoring chat_id={} account={}",
+                    msg.chat.id.0,
+                    account_id
+                );
+                if let Err(e) = bot
+                    .send_message(
+                        msg.chat.id,
+                        format!("Added {} to monitoring list.", account_id),
+                    )
+                    .await
+                {
+                    log::error!(
+                        "Failed to send Add success response chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
             } else {
-                guard.push(MonitoredAccount {
-                    account_id: account_id.clone(),
-                    last_balance: None,
-                    chat_id: msg.chat.id,
-                });
-                log::info!("Account added to monitoring chat_id={} account={}", msg.chat.id.0, account_id);
-                if let Err(e) = bot.send_message(msg.chat.id, format!("Added {} to monitoring list.", account_id)).await {
-                    log::error!("Failed to send Add success response chat_id={}: {}", msg.chat.id.0, e);
+                log::warn!(
+                    "Add command: already monitored chat_id={} account={}",
+                    msg.chat.id.0,
+                    account_id
+                );
+                if let Err(e) = bot
+                    .send_message(
+                        msg.chat.id,
+                        format!("{} is already being monitored.", account_id),
+                    )
+                    .await
+                {
+                    log::error!(
+                        "Failed to send Add duplicate response chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
             }
         }
         Command::Remove(account_id) | Command::Delete(account_id) => {
-            log::info!("Remove command chat_id={} account={}", msg.chat.id.0, account_id);
+            log::info!(
+                "Remove command chat_id={} account={}",
+                msg.chat.id.0,
+                account_id
+            );
             let mut guard = monitored_accounts.lock().await;
-            let len_before = guard.len();
-            guard.retain(|acc| !(acc.account_id == account_id && acc.chat_id == msg.chat.id));
 
-            if guard.len() < len_before {
-                log::info!("Account removed chat_id={} account={}", msg.chat.id.0, account_id);
-                if let Err(e) = bot.send_message(msg.chat.id, format!("Removed {} from monitoring list.", account_id)).await {
-                    log::error!("Failed to send Remove success response chat_id={}: {}", msg.chat.id.0, e);
+            if guard.remove_account(&account_id, msg.chat.id) {
+                log::info!(
+                    "Account removed chat_id={} account={}",
+                    msg.chat.id.0,
+                    account_id
+                );
+                if let Err(e) = bot
+                    .send_message(
+                        msg.chat.id,
+                        format!("Removed {} from monitoring list.", account_id),
+                    )
+                    .await
+                {
+                    log::error!(
+                        "Failed to send Remove success response chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
             } else {
-                log::warn!("Remove command: not found chat_id={} account={}", msg.chat.id.0, account_id);
-                if let Err(e) = bot.send_message(msg.chat.id, format!("Account {} was not found.", account_id)).await {
-                    log::error!("Failed to send Remove not found response chat_id={}: {}", msg.chat.id.0, e);
+                log::warn!(
+                    "Remove command: not found chat_id={} account={}",
+                    msg.chat.id.0,
+                    account_id
+                );
+                if let Err(e) = bot
+                    .send_message(
+                        msg.chat.id,
+                        format!("Account {} was not found.", account_id),
+                    )
+                    .await
+                {
+                    log::error!(
+                        "Failed to send Remove not found response chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
             }
@@ -412,8 +624,15 @@ async fn answer(
             log::info!("Edit command chat_id={} args={}", msg.chat.id.0, args);
             let parts: Vec<&str> = args.split_whitespace().collect();
             if parts.len() != 2 {
-                if let Err(e) = bot.send_message(msg.chat.id, "Usage: /edit <old_id> <new_id>").await {
-                    log::error!("Failed to send Edit validation error chat_id={}: {}", msg.chat.id.0, e);
+                if let Err(e) = bot
+                    .send_message(msg.chat.id, "Usage: /edit <old_id> <new_id>")
+                    .await
+                {
+                    log::error!(
+                        "Failed to send Edit validation error chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
                 return Ok(());
@@ -422,48 +641,101 @@ async fn answer(
             let new_id = parts[1];
 
             let mut guard = monitored_accounts.lock().await;
-            if let Some(acc) = guard.iter_mut().find(|a| a.account_id == old_id && a.chat_id == msg.chat.id) {
-                acc.account_id = new_id.to_string();
-                acc.last_balance = None; // Reset to trigger a new check
-                log::info!("Account updated chat_id={} old={} new={}", msg.chat.id.0, old_id, new_id);
-                if let Err(e) = bot.send_message(msg.chat.id, format!("Updated {} to {}.", old_id, new_id)).await {
-                    log::error!("Failed to send Edit success response chat_id={}: {}", msg.chat.id.0, e);
-                    return Err(e);
+            match guard.update_account(old_id, msg.chat.id, new_id.to_string()) {
+                Ok(_) => {
+                    log::info!(
+                        "Account updated chat_id={} old={} new={}",
+                        msg.chat.id.0,
+                        old_id,
+                        new_id
+                    );
+                    if let Err(e) = bot
+                        .send_message(msg.chat.id, format!("Updated {} to {}.", old_id, new_id))
+                        .await
+                    {
+                        log::error!(
+                            "Failed to send Edit success response chat_id={}: {}",
+                            msg.chat.id.0,
+                            e
+                        );
+                        return Err(e);
+                    }
                 }
-            } else {
-                log::warn!("Edit command: not found chat_id={} old={}", msg.chat.id.0, old_id);
-                if let Err(e) = bot.send_message(msg.chat.id, format!("Account {} was not found.", old_id)).await {
-                    log::error!("Failed to send Edit not found response chat_id={}: {}", msg.chat.id.0, e);
-                    return Err(e);
+                Err(_) => {
+                    log::warn!(
+                        "Edit command: not found chat_id={} old={}",
+                        msg.chat.id.0,
+                        old_id
+                    );
+                    if let Err(e) = bot
+                        .send_message(msg.chat.id, format!("Account {} was not found.", old_id))
+                        .await
+                    {
+                        log::error!(
+                            "Failed to send Edit not found response chat_id={}: {}",
+                            msg.chat.id.0,
+                            e
+                        );
+                        return Err(e);
+                    }
                 }
             }
         }
         Command::List => {
             let guard = monitored_accounts.lock().await;
-            let accounts: Vec<String> = guard.iter()
-                .filter(|acc| acc.chat_id == msg.chat.id)
+            let accounts: Vec<String> = guard
+                .get_accounts_for_chat(msg.chat.id)
+                .iter()
                 .map(|acc| acc.account_id.clone())
                 .collect();
-            log::info!("List command chat_id={} account_count={}", msg.chat.id.0, accounts.len());
+            log::info!(
+                "List command chat_id={} account_count={}",
+                msg.chat.id.0,
+                accounts.len()
+            );
             drop(guard); // Explicitly drop mutex guard before sending message
 
             if accounts.is_empty() {
-                if let Err(e) = bot.send_message(msg.chat.id, "You are not monitoring any accounts.").await {
-                    log::error!("Failed to send List empty response chat_id={}: {}", msg.chat.id.0, e);
+                if let Err(e) = bot
+                    .send_message(msg.chat.id, "You are not monitoring any accounts.")
+                    .await
+                {
+                    log::error!(
+                        "Failed to send List empty response chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
             } else {
                 let list = accounts.join("\n");
-                if let Err(e) = bot.send_message(msg.chat.id, format!("Monitoring:\n{}", list)).await {
-                    log::error!("Failed to send List success response chat_id={}: {}", msg.chat.id.0, e);
+                if let Err(e) = bot
+                    .send_message(msg.chat.id, format!("Monitoring:\n{}", list))
+                    .await
+                {
+                    log::error!(
+                        "Failed to send List success response chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
             }
         }
         Command::Trxs(account_id) => {
             if account_id.is_empty() {
-                if let Err(e) = bot.send_message(msg.chat.id, "Please provide an account ID. Usage: /trxs <account_id>").await {
-                    log::error!("Failed to send Trxs validation error chat_id={}: {}", msg.chat.id.0, e);
+                if let Err(e) = bot
+                    .send_message(
+                        msg.chat.id,
+                        "Please provide an account ID. Usage: /trxs <account_id>",
+                    )
+                    .await
+                {
+                    log::error!(
+                        "Failed to send Trxs validation error chat_id={}: {}",
+                        msg.chat.id.0,
+                        e
+                    );
                     return Err(e);
                 }
                 return Ok(());
@@ -473,8 +745,18 @@ async fn answer(
             match near_client.fetch_transactions(&account_id).await {
                 Ok(txs) => {
                     if txs.is_empty() {
-                        if let Err(e) = bot.send_message(msg.chat.id, format!("No transactions found for {}.", account_id)).await {
-                            log::error!("Failed to send Trxs empty response chat_id={}: {}", msg.chat.id.0, e);
+                        if let Err(e) = bot
+                            .send_message(
+                                msg.chat.id,
+                                format!("No transactions found for {}.", account_id),
+                            )
+                            .await
+                        {
+                            log::error!(
+                                "Failed to send Trxs empty response chat_id={}: {}",
+                                msg.chat.id.0,
+                                e
+                            );
                             return Err(e);
                         }
                     } else {
@@ -490,14 +772,25 @@ async fn answer(
                             ));
                         }
                         if let Err(e) = bot.send_message(msg.chat.id, response).await {
-                            log::error!("Failed to send Trxs success response chat_id={}: {}", msg.chat.id.0, e);
+                            log::error!(
+                                "Failed to send Trxs success response chat_id={}: {}",
+                                msg.chat.id.0,
+                                e
+                            );
                             return Err(e);
                         }
                     }
                 }
                 Err(e) => {
-                    if let Err(send_err) = bot.send_message(msg.chat.id, format!("Error fetching transactions: {}", e)).await {
-                        log::error!("Failed to send Trxs error response chat_id={}: {}", msg.chat.id.0, send_err);
+                    if let Err(send_err) = bot
+                        .send_message(msg.chat.id, format!("Error fetching transactions: {}", e))
+                        .await
+                    {
+                        log::error!(
+                            "Failed to send Trxs error response chat_id={}: {}",
+                            msg.chat.id.0,
+                            send_err
+                        );
                         return Err(send_err);
                     }
                 }
